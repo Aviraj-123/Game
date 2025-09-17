@@ -1,0 +1,564 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>3D Racing — Rock Unique</title>
+
+  <!-- Three.js -->
+  <script src="https://unpkg.com/three@0.154.0/build/three.min.js"></script>
+  <style>
+    :root{
+      --ui-bg: rgba(0,0,0,0.56);
+      --accent: #ffd700;
+      --hud-font: 13px "Inter", Arial, sans-serif;
+    }
+    html,body{height:100%;margin:0;overflow:hidden;background:#000;font-family:Inter,Arial,sans-serif}
+    canvas{display:block;width:100vw;height:100vh}
+
+    /* UI overlay */
+    #ui{position:absolute;left:0;top:0;right:0;bottom:0;pointer-events:none}
+    #menuBar{
+      position:fixed;top:10px;left:10px;display:flex;gap:6px;pointer-events:auto;
+      background:var(--ui-bg);padding:6px;border-radius:10px;
+    }
+    #menuBar button, #menuBar select{background:transparent;color:#fff;border:1px solid rgba(255,255,255,0.12);padding:6px;border-radius:6px}
+
+    #scoreboard{
+      position:fixed;right:10px;top:10px;background:var(--ui-bg);padding:8px;border-radius:10px;color:#fff;
+      display:flex;flex-direction:column;gap:6px;font-size:var(--hud-font);pointer-events:none;min-width:160px;
+    }
+
+    #controls{
+      position:fixed;left:50%;transform:translateX(-50%);bottom:18px;display:flex;gap:12px;
+      pointer-events:auto;
+    }
+    #controls button{
+      width:84px;height:52px;border-radius:12px;border:0;font-size:20px;background:rgba(255,255,255,0.06);color:#fff;
+      touch-action:manipulation;
+    }
+    .overlay, .panel{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);background:var(--ui-bg);padding:14px;border-radius:12px;color:#fff;pointer-events:auto;min-width:260px}
+    .hidden{display:none}
+
+    /* Shop grid */
+    #shopList{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;max-height:360px;overflow:auto;margin-top:10px}
+    .shopItem{background:rgba(255,255,255,0.04);padding:8px;border-radius:8px;display:flex;flex-direction:column;gap:6px}
+    .shopItem button{margin-top:auto;padding:8px;border-radius:6px;border:0;background:var(--accent);color:#000}
+
+    #message{padding:10px;max-width:320px;left:auto;right:10px;bottom:10px;top:auto;transform:none;position:fixed;border-radius:8px}
+    .small{font-size:12px;color:#ddd}
+    .shopThumb{height:80px;background-size:cover;border-radius:6px}
+    @media (max-width:520px){ #menuBar{left:6px;top:6px} #scoreboard{right:6px;top:6px} }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div id="menuBar">
+      <button id="playBtn">▶️ Play</button>
+      <button id="shopBtn">Shop</button>
+      <button id="settingsBtn">Settings</button>
+      <button id="exitBtn">Exit</button>
+      <select id="graphicsSelect" title="Graphics">
+        <option>Low</option><option>Smooth</option><option>High</option><option>Ultra</option><option selected>Max</option>
+      </select>
+    </div>
+
+    <div id="scoreboard">
+      <div>Distance: <span id="distance">0.00</span> km</div>
+      <div>Speed: <span id="speed">0</span> km/h</div>
+      <div>Score: <span id="score">0</span></div>
+      <div>Money Rocks: <span id="money">0</span></div>
+      <div>Damage: <span id="damage">0</span>%</div>
+    </div>
+
+    <div id="controls">
+      <button id="leftBtn">◀</button>
+      <button id="runBtn">▶</button>
+      <button id="rightBtn">▶</button>
+    </div>
+
+    <div id="pauseOverlay" class="overlay hidden">
+      <div style="display:flex;gap:8px;justify-content:center">
+        <button id="resumeBtn">Resume</button>
+        <button id="getOutBtn">Get Out</button>
+      </div>
+    </div>
+
+    <div id="shopPanel" class="panel hidden">
+      <h3>Shop — Lamborghinis</h3>
+      <div id="shopList"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+        <button id="closeShop">Close</button>
+      </div>
+    </div>
+
+    <div id="message" class="panel hidden small"></div>
+  </div>
+
+  <canvas id="sceneCanvas"></canvas>
+
+  <script>
+  // ================= CONFIG & STATE =================
+  const CONFIG = {
+    roadChunkLength: 70,
+    visibleChunks: 8,
+    laneWidth: 2.6,
+    maxSpeed: 220,
+    startSpeed: 30,
+    scoreTickInterval: 2.0,
+    moneyForOpponentOffroad: 10
+  };
+
+  const state = {
+    speed: CONFIG.startSpeed,
+    distanceMeters: 0,
+    score: 0,
+    money: 0,
+    damage: 0,
+    playing: false,
+    inCar: true,
+    leftRight: 0,
+    lastTime: performance.now(),
+    scoreAcc: 0,
+    purchasedCars: [],
+    activeCarIndex: 0
+  };
+
+  // ================ ASSETS (online) =================
+  const ASSETS = {
+    sky: 'https://images.unsplash.com/photo-1502082553048-f009c37129b9?auto=format&fit=crop&w=1950&q=80',
+    audience: 'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=800&q=60',
+    carThumb: 'https://images.unsplash.com/photo-1503736334956-4c8f8e92946d?auto=format&fit=crop&w=800&q=60',
+    music: 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3',
+    crowd: 'https://cdn.pixabay.com/download/audio/2022/02/12/audio_9e7a0d40e9.mp3?filename=applause-8-70667.mp3'
+  };
+
+  // ================= THREE SETUP ====================
+  const canvas = document.getElementById('sceneCanvas');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x87ceeb, 1);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x87ceeb, 0.0009);
+
+  const camera = new THREE.PerspectiveCamera(62, window.innerWidth/window.innerHeight, 0.1, 5000);
+  camera.position.set(0, 3.2, 8);
+  camera.lookAt(0, 0.7, 0);
+
+  const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.1);
+  scene.add(hemi);
+  const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+  dir.position.set(5,10,5);
+  scene.add(dir);
+
+  // background sphere with sky texture
+  const loader = new THREE.TextureLoader();
+  loader.crossOrigin = '';
+  loader.load(ASSETS.sky, tex=>{
+    const bg = new THREE.Mesh(new THREE.SphereGeometry(800,32,16), new THREE.MeshBasicMaterial({map:tex, side:THREE.BackSide}));
+    scene.add(bg);
+  });
+
+  // groups
+  const chunks = new THREE.Group(); scene.add(chunks);
+  const opponents = new THREE.Group(); scene.add(opponents);
+  const props = new THREE.Group(); scene.add(props); // trees/audience extras
+
+  // player car (stylized Lamborghini-like)
+  const player = new THREE.Group();
+  player.position.set(0, 0.5, 6);
+  scene.add(player);
+
+  const carMat = new THREE.MeshStandardMaterial({ color:0x121212, metalness:0.6, roughness:0.25 });
+  const carBody = new THREE.Mesh(new THREE.BoxGeometry(1.8,0.45,3.4), carMat);
+  carBody.position.y = 0.15; player.add(carBody);
+  const bonnet = new THREE.Mesh(new THREE.BoxGeometry(1.5,0.12,1.2), new THREE.MeshStandardMaterial({color:0x333333}));
+  bonnet.position.set(0,0.33,0.9); player.add(bonnet);
+  function addWheel(parent,x,z){
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.3,0.3,0.25,12), new THREE.MeshStandardMaterial({color:0x111111}));
+    w.rotation.z = Math.PI/2; w.position.set(x,0.12,z); parent.add(w);
+  }
+  addWheel(player,0.95,1.25); addWheel(player,-0.95,1.25); addWheel(player,0.95,-1.25); addWheel(player,-0.95,-1.25);
+  const smoke = new THREE.Mesh(new THREE.SphereGeometry(0.18,8,8), new THREE.MeshStandardMaterial({color:0x333333,transparent:true,opacity:0}));
+  smoke.position.set(0,0.9,-1.4); player.add(smoke);
+
+  // =========== ROAD CHUNKS & ENV ============
+  function createRoadChunk(index){
+    const g = new THREE.Group();
+    g.userData.index = index;
+    g.position.z = -index * CONFIG.roadChunkLength;
+
+    // road base
+    const road = new THREE.Mesh(new THREE.BoxGeometry(9, 0.18, CONFIG.roadChunkLength), new THREE.MeshStandardMaterial({color:0x0b0b0b}));
+    road.position.y = 0; g.add(road);
+
+    // stripes — create alternating black/white panels across width
+    const stripeW = CONFIG.roadChunkLength / 12;
+    for(let i=0;i<12;i++){
+      const color = (i%2===0) ? 0xffffff : 0x000000;
+      const s = new THREE.Mesh(new THREE.BoxGeometry(8.6,0.02,stripeW - 1), new THREE.MeshStandardMaterial({color}));
+      s.position.set(0, 0.11, -CONFIG.roadChunkLength/2 + i*stripeW + (Math.random()-0.5)*2);
+      g.add(s);
+    }
+
+    // trees and audience near edges (Minecraft-like blocks)
+    const trunkMat = new THREE.MeshStandardMaterial({color:0x8b5a2b});
+    const leavesMat = new THREE.MeshStandardMaterial({color:0x1fa816});
+    for(let side of [-1,1]){
+      for(let i=0;i<4;i++){
+        const tz = -CONFIG.roadChunkLength/2 + i*(CONFIG.roadChunkLength/3) + (Math.random()-0.5)*6;
+        const trunk = new THREE.Mesh(new THREE.BoxGeometry(0.3,1,0.3), trunkMat);
+        trunk.position.set(side*4.6,0.5,tz);
+        const leaves = new THREE.Mesh(new THREE.BoxGeometry(1.2,1.2,1.2), leavesMat);
+        leaves.position.set(side*4.6,1.3,tz);
+        g.add(trunk); g.add(leaves);
+      }
+    }
+
+    // audience planes
+    const audTex = loader.load(ASSETS.audience);
+    for(let i=0;i<3;i++){
+      const aud = new THREE.Mesh(new THREE.PlaneGeometry(1.4,1.0), new THREE.MeshBasicMaterial({map:audTex, transparent:true}));
+      aud.position.set(3.4, 1.0, -CONFIG.roadChunkLength/2 + i*(CONFIG.roadChunkLength/3));
+      aud.rotation.y = -0.28;
+      g.add(aud);
+      const aud2 = aud.clone(); aud2.position.x = -3.4; aud2.rotation.y = 0.28; g.add(aud2);
+    }
+
+    return g;
+  }
+
+  let furthestChunkIndex = 0;
+  function initChunks(){
+    for(let i=0;i<CONFIG.visibleChunks;i++){
+      const c = createRoadChunk(i);
+      chunks.add(c);
+      furthestChunkIndex = Math.max(furthestChunkIndex, i);
+    }
+  }
+  initChunks();
+
+  function streamChunksIfNeeded(){
+    // when camera has moved enough, recycle behind chunk to front
+    const first = chunks.children[0];
+    if(!first) return;
+    const cameraFrontZ = -camera.position.z;
+    const threshold = (first.userData.index + 1) * CONFIG.roadChunkLength - 8;
+    if(cameraFrontZ > threshold){
+      const moved = chunks.children.shift ? chunks.children[0] : null; // older three versions compatibility
+    }
+    // simpler: check each chunk and if too far behind, move forward
+    for(let i=0;i<chunks.children.length;i++){
+      const ch = chunks.children[i];
+      const rel = -ch.position.z - cameraFrontZ;
+      if(rel < -CONFIG.roadChunkLength * 2){
+        // move ahead
+        const newIndex = ++furthestChunkIndex;
+        ch.userData.index = newIndex;
+        ch.position.z = -newIndex * CONFIG.roadChunkLength;
+        // small randomization
+      }
+    }
+  }
+
+  // =========== OPPONENTS ============
+  function spawnOpponentAt(zOffset = -40){
+    const opp = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(1.6,0.45,3.2), new THREE.MeshStandardMaterial({color:0xff3333, metalness:0.4, roughness:0.5}));
+    opp.add(body);
+    const spoiler = new THREE.Mesh(new THREE.BoxGeometry(1.2,0.08,0.25), new THREE.MeshStandardMaterial({color:0x990000}));
+    spoiler.position.set(0,0.33,-1.35);
+    opp.add(spoiler);
+
+    const laneChoices = [-1,0,1];
+    const lane = laneChoices[Math.floor(Math.random()*3)];
+    opp.position.set(lane * CONFIG.laneWidth, 0.5, camera.position.z + zOffset - Math.random()*20);
+    opp.userData = { speed: state.speed * (0.85 + Math.random()*0.5), lane, damaged:false, offroad:false, recentHit:false };
+    opponents.add(opp);
+    return opp;
+  }
+  for(let i=0;i<6;i++) spawnOpponentAt(-20 - i*22);
+
+  function respawnOppIfFar(opp){
+    if( (opp.position.z - camera.position.z) > 180 ){
+      opp.position.set(([-1,0,1][Math.floor(Math.random()*3)])*CONFIG.laneWidth, 0.5, camera.position.z - 140);
+      opp.userData.offroad = false;
+      opp.userData.damaged = false;
+      opp.userData.speed = state.speed * (0.85 + Math.random()*0.5);
+    }
+  }
+
+  // =========== COLLISIONS & MECHANICS ============
+  function checkCollisions(){
+    const playerBox = new THREE.Box3().setFromObject(player);
+    opponents.children.forEach(opp=>{
+      const oppBox = new THREE.Box3().setFromObject(opp);
+      if(playerBox.intersectsBox(oppBox)){
+        const relative = state.speed - (opp.userData.speed || state.speed);
+        if(relative < -6){
+          // opponent hits player
+          if(!opp.userData.recentHit){
+            state.damage = Math.min(100, state.damage + 6 + Math.floor(Math.random()*16));
+            opp.userData.recentHit = true;
+            setTimeout(()=>opp.userData.recentHit = false, 900);
+            showTemp('Collision! Damage +' , 1200);
+          }
+        } else {
+          // player hits opponent -> push offroad
+          if(!opp.userData.offroad){
+            opp.userData.offroad = true;
+            opp.position.x += (Math.random()>0.5?1:-1) * 5.6;
+            state.money += CONFIG.moneyForOpponentOffroad;
+            showTemp('+10 Money Rocks', 1100);
+          }
+        }
+      }
+      if(Math.abs(opp.position.x) > 6 && (opp.position.z - camera.position.z) > 100){
+        // respawn ahead after slide away
+        respawnOppIfFar(opp);
+      }
+    });
+  }
+
+  // =========== UI & CONTROLS ============
+  const leftBtn = document.getElementById('leftBtn');
+  const rightBtn = document.getElementById('rightBtn');
+  const runBtn = document.getElementById('runBtn');
+  const playBtn = document.getElementById('playBtn');
+  const shopBtn = document.getElementById('shopBtn');
+  const settingsBtn = document.getElementById('settingsBtn');
+  const exitBtn = document.getElementById('exitBtn');
+  const resumeBtn = document.getElementById('resumeBtn');
+  const getOutBtn = document.getElementById('getOutBtn');
+  const shopPanel = document.getElementById('shopPanel');
+  const shopList = document.getElementById('shopList');
+  const closeShop = document.getElementById('closeShop');
+
+  function bindPressHold(element, onStart, onEnd){
+    element.addEventListener('touchstart', e=>{ e.preventDefault(); onStart(); }, {passive:false});
+    element.addEventListener('touchend', e=>{ e.preventDefault(); onEnd(); }, {passive:false});
+    element.addEventListener('mousedown', e=>{ e.preventDefault(); onStart(); });
+    window.addEventListener('mouseup', e=>{ onEnd(); });
+  }
+  bindPressHold(leftBtn, ()=>state.leftRight = -1, ()=>state.leftRight = 0);
+  bindPressHold(rightBtn, ()=>state.leftRight = 1, ()=>state.leftRight = 0);
+  bindPressHold(runBtn, ()=>{ state.speed = Math.min(CONFIG.maxSpeed, state.speed + 28); }, ()=>{ /* noop */ });
+
+  playBtn.addEventListener('click', ()=>{
+    state.playing = true; state.inCar = true;
+    showTemp('Race started',900);
+    startAudioOnce();
+  });
+  shopBtn.addEventListener('click', openShop);
+  closeShop.addEventListener('click', ()=>shopPanel.classList.add('hidden'));
+  settingsBtn.addEventListener('click', ()=>showTemp('Graphics: dropdown select',900));
+  exitBtn.addEventListener('click', ()=>{ state.playing=false; showTemp('Exited',900); });
+  resumeBtn.addEventListener('click', ()=>{ state.playing=true; document.getElementById('pauseOverlay').classList.add('hidden'); state.inCar=true; });
+  getOutBtn.addEventListener('click', ()=>{ state.inCar=false; document.getElementById('pauseOverlay').classList.add('hidden'); showTemp('You stepped out',1100); });
+
+  window.addEventListener('keydown', (e)=>{
+    if(e.key === 'ArrowLeft') state.leftRight = -1;
+    if(e.key === 'ArrowRight') state.leftRight = 1;
+    if(e.key === ' ') { state.playing = !state.playing; showTemp(state.playing ? 'Resumed' : 'Paused', 700); }
+  });
+  window.addEventListener('keyup', (e)=>{
+    if(e.key === 'ArrowLeft' || e.key === 'ArrowRight') state.leftRight = 0;
+  });
+
+  // =========== SHOP IMPLEMENTATION ============
+  const shopCars = [
+    { id:'lam1', name:'Lambo A', price:50, img: ASSETS.carThumb },
+    { id:'lam2', name:'Lambo B', price:70, img: ASSETS.carThumb },
+    { id:'lam3', name:'Lambo C', price:90, img: ASSETS.carThumb },
+    { id:'lam4', name:'Lambo D', price:60, img: ASSETS.carThumb },
+    { id:'lam5', name:'Lambo E', price:100, img: ASSETS.carThumb }
+  ];
+  function renderShop(){
+    shopList.innerHTML = '';
+    shopCars.forEach(c=>{
+      const div = document.createElement('div'); div.className = 'shopItem';
+      div.innerHTML = `<div class="shopThumb" style="background-image:url('${c.img}')"></div>
+        <div><strong>${c.name}</strong></div><div class="small">Price: ${c.price}</div>`;
+      const btn = document.createElement('button');
+      btn.textContent = (state.purchasedCars.includes(c.id) ? 'Sell' : 'Buy');
+      btn.addEventListener('click', ()=>{
+        if(state.purchasedCars.includes(c.id)){
+          state.money += Math.floor(c.price/2);
+          state.purchasedCars = state.purchasedCars.filter(x=>x!==c.id);
+          showTemp('Sold ' + c.name, 900);
+        } else {
+          if(state.money >= c.price){
+            state.money -= c.price;
+            state.purchasedCars.push(c.id);
+            showTemp('Purchased ' + c.name, 900);
+          } else showTemp('Not enough Money Rocks',900);
+        }
+        renderShop();
+      });
+      div.appendChild(btn);
+      shopList.appendChild(div);
+    });
+  }
+  function openShop(){ shopPanel.classList.remove('hidden'); renderShop(); }
+
+  // =========== HUD & MESSAGE ============
+  function updateHUD(){
+    document.getElementById('distance').textContent = (state.distanceMeters/1000).toFixed(2);
+    document.getElementById('speed').textContent = Math.round(state.speed);
+    document.getElementById('score').textContent = Math.floor(state.score);
+    document.getElementById('money').textContent = state.money;
+    document.getElementById('damage').textContent = Math.round(state.damage);
+  }
+
+  const msgEl = document.getElementById('message');
+  let msgTimer = null;
+  function showTemp(text, ms=1200){
+    if(msgTimer) clearTimeout(msgTimer);
+    msgEl.textContent = text;
+    msgEl.classList.remove('hidden');
+    msgTimer = setTimeout(()=>msgEl.classList.add('hidden'), ms);
+  }
+
+  // =========== AUDIO ============
+  let music = null, crowd = null;
+  function initAudio(){
+    music = new Audio(ASSETS.music); music.loop = true; music.volume = 0.45;
+    crowd = new Audio(ASSETS.crowd); crowd.loop = true; crowd.volume = 0.5;
+    document.body.addEventListener('touchstart', startAudioOnce, {once:true});
+    document.body.addEventListener('mousedown', startAudioOnce, {once:true});
+  }
+  function startAudioOnce(){ try{ music.play().catch(()=>{}); crowd.play().catch(()=>{}); }catch(e){} }
+  initAudio();
+
+  // =========== MAIN LOOP & LOGIC ============
+  function clamp(x,a,b){ return Math.max(a,Math.min(b,x)); }
+
+  function animateLoop(){
+    requestAnimationFrame(animateLoop);
+    const now = performance.now();
+    let dt = (now - state.lastTime)/1000;
+    if(dt > 0.05) dt = 0.05;
+    state.lastTime = now;
+
+    // camera and forward movement when playing
+    if(state.playing){
+      // acceleration / drag small effect
+      state.speed = clamp(state.speed - 0.06 * dt * state.speed, 0, CONFIG.maxSpeed);
+
+      // if run button pressed we already increased speed on press; gradual natural acceleration
+      const forwardMs = state.speed * 1000/3600;
+      const forwardDelta = forwardMs * dt;
+      camera.position.z -= forwardDelta * 0.9;
+      player.position.z = camera.position.z + 6; // keep player ahead
+
+      // distance & score
+      state.distanceMeters += forwardDelta;
+      state.scoreAcc += dt;
+      if(state.scoreAcc >= CONFIG.scoreTickInterval){
+        // score increases with speed (example rule)
+        const add = Math.round(Math.max(1, state.speed / 10));
+        state.score += add;
+        state.scoreAcc = 0;
+      }
+    }
+
+    // lateral movement (leftRight controls), smooth interpolation
+    const targetX = state.leftRight * CONFIG.laneWidth;
+    player.position.x += (targetX - player.position.x) * 8 * dt;
+    camera.position.x += (player.position.x - camera.position.x) * 6 * dt;
+
+    // opponent update: move them forward relative to camera
+    opponents.children.forEach(opp=>{
+      // opponent moves forward (higher z means behind camera; we want them to approach)
+      opp.position.z += ( (opp.userData.speed || state.speed) * 1000/3600 ) * dt;
+      // small lane correction if not offroad
+      if(!opp.userData.offroad){
+        const laneX = opp.userData.lane * CONFIG.laneWidth;
+        opp.position.x += (laneX - opp.position.x) * 2 * dt;
+      } else {
+        // offroad drift
+        opp.position.x += (opp.position.x > 0 ? 0.6 : -0.6) * dt;
+      }
+      // respawn if very far ahead (in front of us)
+      if(opp.position.z - camera.position.z > 220){
+        respawnOppIfFar(opp);
+      }
+    });
+
+    // stream chunks
+    streamChunksIfNeeded();
+
+    // collisions
+    checkCollisions();
+
+    // damage smoke visual
+    const dmg = state.damage/100;
+    smoke.material.opacity = clamp(dmg * 0.9, 0, 0.9);
+
+    // if damage reaches 100% -> game over (next match)
+    if(state.damage >= 100 && state.playing){
+      state.playing = false;
+      showTemp('Car destroyed! Match over', 1800);
+      // reset after short delay
+      setTimeout(()=>{
+        // reward or penalty logic, reset stats (simulate next match)
+        state.damage = 0; state.score = 0; state.distanceMeters = 0;
+        player.position.set(0,0.5,camera.position.z + 6);
+        camera.position.set(0,3.2,camera.position.z);
+        showTemp('Ready for next match', 1200);
+      }, 1800);
+    }
+
+    updateHUD();
+    renderer.render(scene, camera);
+  }
+
+  // start animation
+  animateLoop();
+
+  // =========== HELPERS =============
+  function startAudioOnce(){ try{ music.play().catch(()=>{}); crowd.play().catch(()=>{}); }catch(e){} }
+  function showTempOnce(t){ showTemp(t,1200); }
+
+  // expose a debug spawn (tap to add opponents)
+  renderer.domElement.addEventListener('dblclick', ()=>spawnOpponentAt(-30));
+
+  // initial UI hint
+  showTemp('Tap Play ▶️ to start', 2000);
+
+  // responsive
+  window.addEventListener('resize', ()=>{
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // small UI / graphics selector effect
+  document.getElementById('graphicsSelect').addEventListener('change', (e)=>{
+    const val = e.target.value;
+    if(val === 'Low'){ renderer.setPixelRatio(1); showTemp('Graphics: Low',900); }
+    else if(val === 'Smooth'){ renderer.setPixelRatio( window.devicePixelRatio ? Math.min(1.2, window.devicePixelRatio) : 1); showTemp('Graphics: Smooth',900); }
+    else if(val === 'High'){ renderer.setPixelRatio(window.devicePixelRatio ? Math.min(1.5, window.devicePixelRatio) : 1); showTemp('Graphics: High',900); }
+    else if(val === 'Ultra'){ renderer.setPixelRatio(window.devicePixelRatio ? Math.min(2, window.devicePixelRatio) : 1); showTemp('Graphics: Ultra',900); }
+    else if(val === 'Max'){ renderer.setPixelRatio(window.devicePixelRatio || 1); showTemp('Graphics: Max',900); }
+  });
+
+  // small auto-spawn of opponents during gameplay
+  setInterval(()=>{
+    if(state.playing){
+      if(opponents.children.length < 8){
+        spawnOpponentAt(-60 - Math.random()*40);
+      }
+    }
+  }, 2200);
+
+  // small money demo: give starter Money Rocks
+  state.money = 70;
+  renderShop();
+  updateHUD();
+
+  </script>
+</body>
+</html>
